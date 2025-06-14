@@ -382,20 +382,16 @@ def generate_intel_hex(text_segments: List[Tuple[int, int]]) -> List[str]:
     hex_lines = []
 
     for i, (_, instruction) in enumerate(text_segments):
-        address = i * 4
-
-        # Convert to big-endian bytes
-        bytes_ = [
-            (instruction >> 24) & 0xFF,
-            (instruction >> 16) & 0xFF,
-            (instruction >> 8) & 0xFF,
-            instruction & 0xFF
-        ]
-
-        # Format Intel HEX line
-        record = f":04{address:04X}00" + ''.join(f"{b:02X}" for b in bytes_)
-        checksum = calculate_checksum(record[1:])
-        hex_lines.append(f"{record}{checksum:02X}")
+    address = i * 0x100            # 0x0000, 0x0100, …
+    bytes_ = [
+        (instruction >> 24) & 0xFF,
+        (instruction >> 16) & 0xFF,
+        (instruction >> 8)  & 0xFF,
+        instruction & 0xFF,
+    ]
+    record = f":04{address:04X}00" + ''.join(f"{b:02X}" for b in bytes_)
+    checksum = calculate_checksum(record[1:])
+    hex_lines.append(f"{record}{checksum:02X}")
 
     # End of file
     hex_lines.append(":00000001FF")
