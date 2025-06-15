@@ -58,6 +58,11 @@ class MipsAssembler:
         self.current_data_address = self.data_start
         self.current_text_address = self.text_start
 
+    
+    def fits_signed16(self, value: int) -> bool:
+        """Check if a value fits in 16-bit signed integer"""
+        return -32768 <= value <= 32767
+
     def parse_register(self, reg_str: str) -> int:
         """Parse register string and return register number"""
         reg_str = reg_str.strip().replace(',', '')
@@ -66,6 +71,8 @@ class MipsAssembler:
         raise ValueError(f"Invalid register: {reg_str}")
 
     def parse_immediate(self, imm_str: str) -> int:
+        imm_str = imm_str.split("#")[0].strip()  # Strip inline comments
+
         """Parse immediate value (decimal or hex)"""
         imm_str = imm_str.strip().replace(',', '')
         if imm_str.startswith('0x'):
@@ -268,6 +275,39 @@ class MipsAssembler:
                 address += 4
 
     def assemble_instruction(self, instruction: str, address: int) -> Optional[int]:
+        # Handle pseudo-instructions
+        if instruction.startswith("li "):
+            reg, imm = instruction[3:].split(",", 1)
+            reg = reg.strip()
+            imm_val = self.parse_immediate(imm.strip())
+            if self.fits_signed16(imm_val):
+                return self.encode_i_type(self.i_type_opcodes["addi"], 0, self.parse_register(reg), imm_val)
+            else:
+                upper = (imm_val >> 16) & 0xFFFF
+                lower = imm_val & 0xFFFF
+                rt = self.parse_register(reg)
+                self.text_segment.append((address, self.encode_i_type(self.i_type_opcodes["lui"], 0, rt, upper)))
+                self.text_segment.append((address + 4, self.encode_i_type(self.i_type_opcodes["ori"], rt, rt, lower)))
+                return None
+
+        elif instruction.startswith("la "):
+            reg, label = instruction[3:].split(",", 1)
+            reg = reg.strip()
+            label = label.strip()
+            addr = self.data_labels.get(label, 0)
+            upper = (addr >> 16) & 0xFFFF
+            lower = addr & 0xFFFF
+            rt = self.parse_register(reg)
+            self.text_segment.append((address, self.encode_i_type(self.i_type_opcodes["lui"], 0, rt, upper)))
+            self.text_segment.append((address + 4, self.encode_i_type(self.i_type_opcodes["ori"], rt, rt, lower)))
+            return None
+
+        elif instruction.startswith("move "):
+            rd, rs = instruction[5:].split(",", 1)
+            rd = self.parse_register(rd.strip())
+            rs = self.parse_register(rs.strip())
+            return self.encode_r_type(0, rs, 0, rd, 0, self.r_type_functs["or"])
+
         """Assemble a single MIPS instruction"""
         instruction = instruction.strip()
         if not instruction or instruction.startswith('#') or instruction.startswith('.'):
