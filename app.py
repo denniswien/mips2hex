@@ -1,5 +1,5 @@
 import streamlit as st
-from asm2hex import MipsAssembler, generate_intel_hex  # your existing classes/functions
+from asm2hex import MipsAssembler, generate_intel_hex
 
 def convert_asm_to_hex(asm_code: str) -> str:
     assembler = MipsAssembler()
@@ -9,15 +9,15 @@ def convert_asm_to_hex(asm_code: str) -> str:
     hex_lines = generate_intel_hex(assembler.text_segment)
     return '\n'.join(hex_lines)
 
-# Streamlit UI
-st.title("MIPS to Intel HEX Converter")
+st.title("MIPS → Intel-HEX converter")
 
-asm_input = st.text_area("Paste your MIPS Assembly Code here:", height=300)
+asm_source = st.text_area("Paste MIPS assembly:", height=300)
 
 if st.button("Convert"):
     try:
-        hex_output = convert_asm_to_hex(asm_input)
-        st.success("Conversion successful!")
-        st.text_area("Intel HEX Output:", hex_output, height=300)
-    except Exception as e:
-        st.error(f"Error during conversion: {e}")
+        hex_out = convert_asm_to_hex(asm_source)
+        st.success("✓ Conversion successful")
+        st.text_area("Intel HEX:", hex_out, height=300)
+        st.download_button("Download .hex", hex_out, file_name="output.hex")
+    except ValueError as err:
+        st.error(str(err))
