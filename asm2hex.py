@@ -47,6 +47,10 @@ class MipsAssembler:
             'j': 0x02, 'jal': 0x03
         }
 
+        self.special2_functs = {
+            'mul': 0x02
+        }
+
         self.labels = {}
         self.data_labels = {}
         self.data_segment = []  # List of (address, data_bytes)
@@ -58,7 +62,9 @@ class MipsAssembler:
         self.current_data_address = self.data_start
         self.current_text_address = self.text_start
 
-    
+    def encode_special2(self, rs: int, rt: int, rd: int, funct: int) -> int:
+        """Encode SPECIAL2-format R-type instruction (opcode 0x1C)"""
+        return (0x1C << 26) | (rs << 21) | (rt << 16) | (rd << 11) | (funct & 0x3F)
     def fits_signed16(self, value: int) -> bool:
         """Check if a value fits in 16-bit signed integer"""
         return -32768 <= value <= 32767
@@ -308,6 +314,7 @@ class MipsAssembler:
             rs = self.parse_register(rs.strip())
             return self.encode_r_type(0, rs, 0, rd, 0, self.r_type_functs["or"])
 
+
         """Assemble a single MIPS instruction"""
         instruction = instruction.strip()
         if not instruction or instruction.startswith('#') or instruction.startswith('.'):
@@ -324,8 +331,14 @@ class MipsAssembler:
         op = parts[0].lower()
 
         try:
+            if op in self.special2_functs:  # e.g.  mul rd, rs, rt
+                rd = self.parse_register(parts[1])
+                rs = self.parse_register(parts[2])
+                rt = self.parse_register(parts[3])
+                return self.encode_special2(rs, rt, rd,
+                                            self.special2_functs[op])
             # R-type instructions
-            if op in self.r_type_functs:
+            elif op in self.r_type_functs:
                 if op in ['sll', 'srl', 'sra']:  # Shift instructions
                     rd = self.parse_register(parts[1])
                     rt = self.parse_register(parts[2])
