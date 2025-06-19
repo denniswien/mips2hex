@@ -62,25 +62,31 @@ class MipsAssembler:
         self.current_data_address = self.data_start
         self.current_text_address = self.text_start
 
+    def strip_comment(self, text: str) -> str:
+        """Remove inline comments from text"""
+        comment_pos = text.find('#')
+        if comment_pos != -1:
+            return text[:comment_pos].strip()
+        return text.strip()
+
     def encode_special2(self, rs: int, rt: int, rd: int, funct: int) -> int:
         """Encode SPECIAL2-format R-type instruction (opcode 0x1C)"""
         return (0x1C << 26) | (rs << 21) | (rt << 16) | (rd << 11) | (funct & 0x3F)
+
     def fits_signed16(self, value: int) -> bool:
         """Check if a value fits in 16-bit signed integer"""
         return -32768 <= value <= 32767
 
     def parse_register(self, reg_str: str) -> int:
         """Parse register string and return register number"""
-        reg_str = reg_str.strip().replace(',', '')
+        reg_str = self.strip_comment(reg_str).replace(',', '').strip()
         if reg_str in self.registers:
             return self.registers[reg_str]
         raise ValueError(f"Invalid register: {reg_str}")
 
     def parse_immediate(self, imm_str: str) -> int:
-        imm_str = imm_str.split("#")[0].strip()  # Strip inline comments
-
         """Parse immediate value (decimal or hex)"""
-        imm_str = imm_str.strip().replace(',', '')
+        imm_str = self.strip_comment(imm_str).replace(',', '').strip()
         if imm_str.startswith('0x'):
             return int(imm_str, 16)
         return int(imm_str)
@@ -101,7 +107,7 @@ class MipsAssembler:
 
     def parse_data_directive(self, line: str) -> Optional[List[int]]:
         """Parse data directives like .word, .byte, .ascii, etc."""
-        line = line.strip()
+        line = self.strip_comment(line)
         if not line.startswith('.'):
             return None
 
@@ -117,8 +123,10 @@ class MipsAssembler:
         try:
             if directive == '.word':
                 # Parse comma-separated 32-bit words
-                values = [x.strip() for x in data_str.split(',')]
+                values = [self.strip_comment(x.strip()) for x in data_str.split(',')]
                 for val in values:
+                    if not val:  # Skip empty values
+                        continue
                     if val.startswith('0x'):
                         word = int(val, 16)
                     else:
@@ -133,8 +141,10 @@ class MipsAssembler:
 
             elif directive == '.half' or directive == '.halfword':
                 # Parse comma-separated 16-bit halfwords
-                values = [x.strip() for x in data_str.split(',')]
+                values = [self.strip_comment(x.strip()) for x in data_str.split(',')]
                 for val in values:
+                    if not val:  # Skip empty values
+                        continue
                     if val.startswith('0x'):
                         halfword = int(val, 16)
                     else:
@@ -147,8 +157,10 @@ class MipsAssembler:
 
             elif directive == '.byte':
                 # Parse comma-separated bytes
-                values = [x.strip() for x in data_str.split(',')]
+                values = [self.strip_comment(x.strip()) for x in data_str.split(',')]
                 for val in values:
+                    if not val:  # Skip empty values
+                        continue
                     if val.startswith('0x'):
                         byte = int(val, 16)
                     else:
@@ -157,6 +169,7 @@ class MipsAssembler:
 
             elif directive == '.ascii':
                 # Parse ASCII string (without null terminator)
+                data_str = self.strip_comment(data_str)
                 if data_str.startswith('"') and data_str.endswith('"'):
                     string = data_str[1:-1]
                     # Handle escape sequences
@@ -166,6 +179,7 @@ class MipsAssembler:
 
             elif directive == '.asciiz':
                 # Parse ASCII string with null terminator
+                data_str = self.strip_comment(data_str)
                 if data_str.startswith('"') and data_str.endswith('"'):
                     string = data_str[1:-1]
                     # Handle escape sequences
@@ -176,12 +190,12 @@ class MipsAssembler:
 
             elif directive == '.space':
                 # Allocate space (fill with zeros)
-                size = int(data_str)
+                size = int(self.strip_comment(data_str))
                 data_bytes.extend([0] * size)
 
             elif directive == '.align':
                 # Alignment directive - pad to alignment boundary
-                alignment = int(data_str)
+                alignment = int(self.strip_comment(data_str))
                 current_pos = self.current_data_address
                 aligned_pos = ((current_pos + alignment - 1) // alignment) * alignment
                 padding = aligned_pos - current_pos
@@ -235,8 +249,8 @@ class MipsAssembler:
         # First pass: collect labels
         address = self.current_text_address
         for line in lines:
-            line = line.strip()
-            if not line or line.startswith('#'):
+            line = self.strip_comment(line)
+            if not line:
                 continue
 
             if line.lower() == '.text':
@@ -255,14 +269,26 @@ class MipsAssembler:
 
             # Count instructions (not labels or directives)
             if not line.startswith('.') and not ((':' in line) and (line.split(':', 1)[1].strip() == '')):
-                address += 4
+                # Handle pseudo-instructions that expand to multiple instructions
+                if line.strip().startswith("li "):
+                    reg, imm = line.strip()[3:].split(",", 1)
+                    imm_val = self.parse_immediate(imm.strip())
+                    if not self.fits_signed16(imm_val):
+                        address += 8  # lui + ori
+                    else:
+                        address += 4  # addi
+                elif line.strip().startswith("la "):
+                    address += 8  # lui + ori
+                else:
+                    address += 4
 
         # Second pass: assemble instructions
         address = self.current_text_address
         in_text_section = False
         for line in lines:
-            line = line.strip()
-            if not line or line.startswith('#'):
+            original_line = line
+            line = self.strip_comment(line)
+            if not line:
                 continue
 
             if line.lower() == '.text':
@@ -275,46 +301,19 @@ class MipsAssembler:
             if not in_text_section:
                 continue
 
-            instruction_word = self.assemble_instruction(line, address)
-            if instruction_word is not None:
-                self.text_segment.append((address, instruction_word))
-                address += 4
+            result = self.assemble_instruction(line, address)
+            if result is not None:
+                if isinstance(result, list):
+                    # Multiple instructions (pseudo-instructions)
+                    for instruction_word in result:
+                        self.text_segment.append((address, instruction_word))
+                        address += 4
+                else:
+                    # Single instruction
+                    self.text_segment.append((address, result))
+                    address += 4
 
     def assemble_instruction(self, instruction: str, address: int) -> Optional[int]:
-        # Handle pseudo-instructions
-        if instruction.startswith("li "):
-            reg, imm = instruction[3:].split(",", 1)
-            reg = reg.strip()
-            imm_val = self.parse_immediate(imm.strip())
-            if self.fits_signed16(imm_val):
-                return self.encode_i_type(self.i_type_opcodes["addi"], 0, self.parse_register(reg), imm_val)
-            else:
-                upper = (imm_val >> 16) & 0xFFFF
-                lower = imm_val & 0xFFFF
-                rt = self.parse_register(reg)
-                self.text_segment.append((address, self.encode_i_type(self.i_type_opcodes["lui"], 0, rt, upper)))
-                self.text_segment.append((address + 4, self.encode_i_type(self.i_type_opcodes["ori"], rt, rt, lower)))
-                return None
-
-        elif instruction.startswith("la "):
-            reg, label = instruction[3:].split(",", 1)
-            reg = reg.strip()
-            label = label.strip()
-            addr = self.data_labels.get(label, 0)
-            upper = (addr >> 16) & 0xFFFF
-            lower = addr & 0xFFFF
-            rt = self.parse_register(reg)
-            self.text_segment.append((address, self.encode_i_type(self.i_type_opcodes["lui"], 0, rt, upper)))
-            self.text_segment.append((address + 4, self.encode_i_type(self.i_type_opcodes["ori"], rt, rt, lower)))
-            return None
-
-        elif instruction.startswith("move "):
-            rd, rs = instruction[5:].split(",", 1)
-            rd = self.parse_register(rd.strip())
-            rs = self.parse_register(rs.strip())
-            return self.encode_r_type(0, rs, 0, rd, 0, self.r_type_functs["or"])
-
-
         """Assemble a single MIPS instruction"""
         instruction = instruction.strip()
         if not instruction or instruction.startswith('#') or instruction.startswith('.'):
@@ -327,7 +326,44 @@ class MipsAssembler:
             if not instruction:
                 return None
 
+        # Handle pseudo-instructions
+        if instruction.startswith("li "):
+            reg, imm = instruction[3:].split(",", 1)
+            reg = reg.strip()
+            imm_val = self.parse_immediate(imm.strip())
+            if self.fits_signed16(imm_val):
+                return self.encode_i_type(self.i_type_opcodes["addi"], 0, self.parse_register(reg), imm_val)
+            else:
+                upper = (imm_val >> 16) & 0xFFFF
+                lower = imm_val & 0xFFFF
+                rt = self.parse_register(reg)
+                return [
+                    self.encode_i_type(self.i_type_opcodes["lui"], 0, rt, upper),
+                    self.encode_i_type(self.i_type_opcodes["ori"], rt, rt, lower)
+                ]
+
+        elif instruction.startswith("la "):
+            reg, label = instruction[3:].split(",", 1)
+            reg = reg.strip()
+            label = label.strip()
+            addr = self.data_labels.get(label, 0)
+            upper = (addr >> 16) & 0xFFFF
+            lower = addr & 0xFFFF
+            rt = self.parse_register(reg)
+            return [
+                self.encode_i_type(self.i_type_opcodes["lui"], 0, rt, upper),
+                self.encode_i_type(self.i_type_opcodes["ori"], rt, rt, lower)
+            ]
+
+        elif instruction.startswith("move "):
+            rd, rs = instruction[5:].split(",", 1)
+            rd = self.parse_register(rd.strip())
+            rs = self.parse_register(rs.strip())
+            return self.encode_r_type(0, rs, 0, rd, 0, self.r_type_functs["or"])
+
+        # Parse regular instructions
         parts = re.split(r'[,\s]+', instruction)
+        parts = [self.strip_comment(part) for part in parts if part.strip()]
         op = parts[0].lower()
 
         try:
@@ -335,8 +371,8 @@ class MipsAssembler:
                 rd = self.parse_register(parts[1])
                 rs = self.parse_register(parts[2])
                 rt = self.parse_register(parts[3])
-                return self.encode_special2(rs, rt, rd,
-                                            self.special2_functs[op])
+                return self.encode_special2(rs, rt, rd, self.special2_functs[op])
+
             # R-type instructions
             elif op in self.r_type_functs:
                 if op in ['sll', 'srl', 'sra']:  # Shift instructions
@@ -431,11 +467,11 @@ def write_data_record(hex_lines: List[str], address: int, data_bytes: List[int])
 
 
 def generate_intel_hex(text_segments: List[Tuple[int, int]]) -> List[str]:
-    """Generate Intel HEX with instructions at 0x000, 0x100, 0x200... and 1 per line"""
+    """Generate Intel HEX with instructions at consecutive byte addresses (0x0001, 0x0002, 0x0003...)"""
     hex_lines = []
 
     for i, (_, instruction) in enumerate(text_segments):
-        address = i * 4
+        address = i + 1  # Byte addresses: 0x0001, 0x0002, 0x0003, etc.
 
         # Convert to big-endian bytes
         bytes_ = [
@@ -445,7 +481,7 @@ def generate_intel_hex(text_segments: List[Tuple[int, int]]) -> List[str]:
             instruction & 0xFF
         ]
 
-        # Format Intel HEX line
+        # Format Intel HEX line - one instruction (4 bytes) per line
         record = f":04{address:04X}00" + ''.join(f"{b:02X}" for b in bytes_)
         checksum = calculate_checksum(record[1:])
         hex_lines.append(f"{record}{checksum:02X}")
@@ -453,7 +489,6 @@ def generate_intel_hex(text_segments: List[Tuple[int, int]]) -> List[str]:
     # End of file
     hex_lines.append(":00000001FF")
     return hex_lines
-
 
 
 def calculate_checksum(hex_string: str) -> int:
@@ -493,7 +528,6 @@ def main():
     except Exception as e:
         print("Error:", e)
         sys.exit(1)
-
 
 
 if __name__ == "__main__":
